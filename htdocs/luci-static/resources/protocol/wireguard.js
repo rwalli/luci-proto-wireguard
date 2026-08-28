@@ -28,6 +28,213 @@ var generatePsk = rpc.declare({
 	expect: { psk: '' }
 });
 
+/* Defaults for new peers live on the WireGuard interface section in
+ * /etc/config/network: peer_* options prefill the peer dialog, client_*
+ * options prefill the generated client configuration. */
+var PEER_PREFIX = 'peer_',
+    CLIENT_PREFIX = 'client_';
+
+/* peer_* names selecting behaviour instead of naming a peer option */
+var peerDefaultFlags = [ 'generate_keys', 'generate_psk' ];
+
+/* key material is never shared between peers */
+var peerDefaultExcludes = [ 'public_key', 'private_key', 'preshared_key' ];
+
+function getDefaults(ifname, prefix) {
+	var section = uci.get('network', ifname) || {},
+	    rv = {};
+
+	for (var key in section) {
+		if (key.charAt(0) == '.' || key.indexOf(prefix) != 0)
+			continue;
+
+		var name = key.substring(prefix.length);
+
+		if (name.length && section[key] != '')
+			rv[name] = section[key];
+	}
+
+	return rv;
+}
+
+function isTrue(value) {
+	return (value == '1' || value == 'true' || value == 'yes' || value == 'on');
+}
+
+function parseAddress(address) {
+	var parts = String(address).trim().split('/'),
+	    words = validation.parseIPv4(parts[0]),
+	    size = 8;
+
+	if (words == null) {
+		words = validation.parseIPv6(parts[0]);
+		size = 16;
+	}
+
+	if (words == null)
+		return null;
+
+	var bits = words.length * size,
+	    mask = (parts[1] != null && parts[1].match(/^\d+$/)) ? +parts[1] : bits;
+
+	return { words: words, size: size, bits: bits, mask: (mask > bits) ? bits : mask };
+}
+
+function addressKey(addr) {
+	return '%d-%s'.format(addr.bits, addr.words.join(':'));
+}
+
+function formatAddress(addr) {
+	if (addr.size == 8)
+		return addr.words.join('.');
+
+	var parts = addr.words.map(function(word) { return word.toString(16) }),
+	    best = -1, bestLen = 0, start = -1, len = 0;
+
+	for (var i = 0; i < addr.words.length; i++) {
+		if (addr.words[i] == 0) {
+			if (start < 0) {
+				start = i;
+				len = 0;
+			}
+
+			if (++len > bestLen) {
+				best = start;
+				bestLen = len;
+			}
+		}
+		else {
+			start = -1;
+			len = 0;
+		}
+	}
+
+	if (bestLen > 1) {
+		parts.splice(best, bestLen, '');
+
+		if (best == 0)
+			parts.unshift('');
+
+		if (best + bestLen == addr.words.length)
+			parts.push('');
+	}
+
+	return parts.join(':');
+}
+
+function maskAddress(addr) {
+	var words = addr.words.slice(),
+	    max = (1 << addr.size) - 1,
+	    rem = addr.mask;
+
+	for (var i = 0; i < words.length; i++) {
+		if (rem >= addr.size) {
+			rem -= addr.size;
+			continue;
+		}
+
+		words[i] &= rem ? ((max << (addr.size - rem)) & max) : 0;
+		rem = 0;
+	}
+
+	return { words: words, size: addr.size, bits: addr.bits, mask: addr.mask };
+}
+
+function incAddress(addr) {
+	var words = addr.words.slice(),
+	    max = (1 << addr.size) - 1;
+
+	for (var i = words.length - 1; i >= 0; i--) {
+		words[i] = (words[i] + 1) & max;
+
+		if (words[i] != 0)
+			break;
+	}
+
+	return { words: words, size: addr.size, bits: addr.bits, mask: addr.mask };
+}
+
+function isBroadcast(addr) {
+	var max = (1 << addr.size) - 1,
+	    net = maskAddress(addr);
+
+	if (addr.size != 8 || addr.mask >= addr.bits - 1)
+		return false;
+
+	for (var i = 0; i < addr.words.length; i++) {
+		var host = addr.words[i] ^ net.words[i],
+		    bits = Math.min(Math.max(addr.mask - i * addr.size, 0), addr.size);
+
+		if (host != (max >> bits))
+			return false;
+	}
+
+	return true;
+}
+
+/* Next unused host address within the network of `ifaceAddr`, skipping
+ * everything in `used` as well as network and broadcast address. */
+function nextFreeAddress(ifaceAddr, used) {
+	var net = maskAddress(ifaceAddr),
+	    netKey = addressKey(net),
+	    candidate = incAddress(net),
+	    limit = 4096;
+
+	while (limit-- > 0) {
+		if (addressKey(maskAddress(candidate)) != netKey)
+			return null;
+
+		if (!used[addressKey(candidate)] && !isBroadcast(candidate))
+			return candidate;
+
+		candidate = incAddress(candidate);
+	}
+
+	return null;
+}
+
+/* One free host address per family the interface has an address in, formatted
+ * as host routes (/32, /128) for use in the peer's allowed_ips. */
+function calculatePeerAddresses(ifname, ifaceAddrs) {
+	var used = {},
+	    rv = [];
+
+	function markUsed(address) {
+		var addr = parseAddress(address);
+
+		/* only host entries occupy an address, ranges are routes */
+		if (addr != null && addr.mask == addr.bits)
+			used[addressKey(addr)] = true;
+	}
+
+	L.toArray(ifaceAddrs).forEach(function(address) {
+		var addr = parseAddress(address);
+
+		if (addr != null)
+			used[addressKey(addr)] = true;
+	});
+
+	uci.sections('network', 'wireguard_%s'.format(ifname), function(peer) {
+		L.toArray(peer.allowed_ips).forEach(markUsed);
+	});
+
+	L.toArray(ifaceAddrs).forEach(function(address) {
+		var addr = parseAddress(address);
+
+		if (addr == null || rv.filter(function(a) { return a.bits == addr.bits }).length)
+			return;
+
+		var free = nextFreeAddress(addr, used);
+
+		if (free != null) {
+			used[addressKey(free)] = true;
+			rv.push(free);
+		}
+	});
+
+	return rv.map(function(addr) { return '%s/%d'.format(formatAddress(addr), addr.bits) });
+}
+
 var qrIcon = '<svg viewBox="0 0 29 29" xmlns="http://www.w3.org/2000/svg"><path fill="#fff" d="M0 0h29v29H0z"/><path d="M4 4h1v1H4zM5 4h1v1H5zM6 4h1v1H6zM7 4h1v1H7zM8 4h1v1H8zM9 4h1v1H9zM10 4h1v1h-1zM12 4h1v1h-1zM13 4h1v1h-1zM14 4h1v1h-1zM15 4h1v1h-1zM16 4h1v1h-1zM18 4h1v1h-1zM19 4h1v1h-1zM20 4h1v1h-1zM21 4h1v1h-1zM22 4h1v1h-1zM23 4h1v1h-1zM24 4h1v1h-1zM4 5h1v1H4zM10 5h1v1h-1zM12 5h1v1h-1zM14 5h1v1h-1zM16 5h1v1h-1zM18 5h1v1h-1zM24 5h1v1h-1zM4 6h1v1H4zM6 6h1v1H6zM7 6h1v1H7zM8 6h1v1H8zM10 6h1v1h-1zM12 6h1v1h-1zM18 6h1v1h-1zM20 6h1v1h-1zM21 6h1v1h-1zM22 6h1v1h-1zM24 6h1v1h-1zM4 7h1v1H4zM6 7h1v1H6zM7 7h1v1H7zM8 7h1v1H8zM10 7h1v1h-1zM12 7h1v1h-1zM13 7h1v1h-1zM14 7h1v1h-1zM15 7h1v1h-1zM18 7h1v1h-1zM20 7h1v1h-1zM21 7h1v1h-1zM22 7h1v1h-1zM24 7h1v1h-1zM4 8h1v1H4zM6 8h1v1H6zM7 8h1v1H7zM8 8h1v1H8zM10 8h1v1h-1zM16 8h1v1h-1zM18 8h1v1h-1zM20 8h1v1h-1zM21 8h1v1h-1zM22 8h1v1h-1zM24 8h1v1h-1zM4 9h1v1H4zM10 9h1v1h-1zM12 9h1v1h-1zM13 9h1v1h-1zM15 9h1v1h-1zM18 9h1v1h-1zM24 9h1v1h-1zM4 10h1v1H4zM5 10h1v1H5zM6 10h1v1H6zM7 10h1v1H7zM8 10h1v1H8zM9 10h1v1H9zM10 10h1v1h-1zM12 10h1v1h-1zM14 10h1v1h-1zM16 10h1v1h-1zM18 10h1v1h-1zM19 10h1v1h-1zM20 10h1v1h-1zM21 10h1v1h-1zM22 10h1v1h-1zM23 10h1v1h-1zM24 10h1v1h-1zM13 11h1v1h-1zM14 11h1v1h-1zM15 11h1v1h-1zM16 11h1v1h-1zM4 12h1v1H4zM5 12h1v1H5zM8 12h1v1H8zM9 12h1v1H9zM10 12h1v1h-1zM13 12h1v1h-1zM15 12h1v1h-1zM19 12h1v1h-1zM21 12h1v1h-1zM22 12h1v1h-1zM23 12h1v1h-1zM24 12h1v1h-1zM5 13h1v1H5zM6 13h1v1H6zM8 13h1v1H8zM11 13h1v1h-1zM13 13h1v1h-1zM14 13h1v1h-1zM15 13h1v1h-1zM16 13h1v1h-1zM19 13h1v1h-1zM22 13h1v1h-1zM4 14h1v1H4zM5 14h1v1H5zM9 14h1v1H9zM10 14h1v1h-1zM11 14h1v1h-1zM15 14h1v1h-1zM18 14h1v1h-1zM19 14h1v1h-1zM20 14h1v1h-1zM21 14h1v1h-1zM22 14h1v1h-1zM23 14h1v1h-1zM7 15h1v1H7zM8 15h1v1H8zM9 15h1v1H9zM11 15h1v1h-1zM12 15h1v1h-1zM13 15h1v1h-1zM17 15h1v1h-1zM18 15h1v1h-1zM20 15h1v1h-1zM21 15h1v1h-1zM23 15h1v1h-1zM4 16h1v1H4zM6 16h1v1H6zM10 16h1v1h-1zM11 16h1v1h-1zM13 16h1v1h-1zM14 16h1v1h-1zM16 16h1v1h-1zM17 16h1v1h-1zM18 16h1v1h-1zM22 16h1v1h-1zM23 16h1v1h-1zM24 16h1v1h-1zM12 17h1v1h-1zM16 17h1v1h-1zM17 17h1v1h-1zM18 17h1v1h-1zM4 18h1v1H4zM5 18h1v1H5zM6 18h1v1H6zM7 18h1v1H7zM8 18h1v1H8zM9 18h1v1H9zM10 18h1v1h-1zM14 18h1v1h-1zM16 18h1v1h-1zM17 18h1v1h-1zM21 18h1v1h-1zM22 18h1v1h-1zM23 18h1v1h-1zM4 19h1v1H4zM10 19h1v1h-1zM12 19h1v1h-1zM13 19h1v1h-1zM15 19h1v1h-1zM16 19h1v1h-1zM19 19h1v1h-1zM21 19h1v1h-1zM23 19h1v1h-1zM24 19h1v1h-1zM4 20h1v1H4zM6 20h1v1H6zM7 20h1v1H7zM8 20h1v1H8zM10 20h1v1h-1zM12 20h1v1h-1zM13 20h1v1h-1zM15 20h1v1h-1zM18 20h1v1h-1zM19 20h1v1h-1zM20 20h1v1h-1zM22 20h1v1h-1zM23 20h1v1h-1zM24 20h1v1h-1zM4 21h1v1H4zM6 21h1v1H6zM7 21h1v1H7zM8 21h1v1H8zM10 21h1v1h-1zM13 21h1v1h-1zM15 21h1v1h-1zM16 21h1v1h-1zM19 21h1v1h-1zM21 21h1v1h-1zM23 21h1v1h-1zM24 21h1v1h-1zM4 22h1v1H4zM6 22h1v1H6zM7 22h1v1H7zM8 22h1v1H8zM10 22h1v1h-1zM13 22h1v1h-1zM15 22h1v1h-1zM18 22h1v1h-1zM19 22h1v1h-1zM20 22h1v1h-1zM21 22h1v1h-1zM22 22h1v1h-1zM4 23h1v1H4zM10 23h1v1h-1zM12 23h1v1h-1zM13 23h1v1h-1zM14 23h1v1h-1zM17 23h1v1h-1zM18 23h1v1h-1zM20 23h1v1h-1zM22 23h1v1h-1zM4 24h1v1H4zM5 24h1v1H5zM6 24h1v1H6zM7 24h1v1H7zM8 24h1v1H8zM9 24h1v1H9zM10 24h1v1h-1zM12 24h1v1h-1zM13 24h1v1h-1zM14 24h1v1h-1zM16 24h1v1h-1zM17 24h1v1h-1zM18 24h1v1h-1zM22 24h1v1h-1zM24 24h1v1h-1z"/></svg>';
 
 function validateBase64(section_id, value) {
@@ -482,6 +689,148 @@ return network.registerProtocol('wireguard', {
 			return E('em', _('No peers defined yet.'));
 		};
 
+		/* the modal clones our options into a section of its own, that clone is
+		 * what owns the rendered UI elements */
+		ss.addModalOptions = function(modalSection, section_id, ev) {
+			this.activeModalSection = modalSection;
+
+			return this.super('addModalOptions', arguments);
+		};
+
+		ss.renderMoreOptionsModal = function(section_id, ev) {
+			return Promise.resolve(this.super('renderMoreOptionsModal', arguments)).then(L.bind(function() {
+				const mapNode = this.getActiveModalMap();
+				const row = mapNode ? mapNode.parentNode.querySelector('div.button-row') : null;
+
+				if (!row)
+					return;
+
+				const defaults = getDefaults(s.section, PEER_PREFIX);
+				const button = E('button', {
+					'class': 'btn cbi-button load-defaults',
+					'style': 'margin-right:auto',
+					'disabled': Object.keys(defaults).length ? null : '',
+					'data-tooltip': Object.keys(defaults).length ? null : _('No defaults configured. Add peer_* options to the %s interface section in /etc/config/network.').format(s.section),
+					'click': ui.createHandlerFn(this, 'handleLoadDefaults', section_id)
+				}, [ _('Load defaults') ]);
+
+				row.querySelectorAll('button.load-defaults').forEach(function(stale) {
+					stale.parentNode.removeChild(stale);
+				});
+
+				row.insertBefore(button, row.firstChild);
+
+				/* this dialog is stacked onto the interface dialog and shares its
+				 * button row, so take the button away again once it is closed */
+				const observer = new MutationObserver(function() {
+					if (mapNode.isConnected && !mapNode.classList.contains('hidden'))
+						return;
+
+					if (button.parentNode)
+						button.parentNode.removeChild(button);
+
+					observer.disconnect();
+				});
+
+				observer.observe(row.parentNode, {
+					childList: true,
+					subtree: true,
+					attributes: true,
+					attributeFilter: [ 'class' ]
+				});
+			}, this));
+		};
+
+		ss.handleLoadDefaults = function(section_id, ev) {
+			const section = this.activeModalSection;
+			const defaults = getDefaults(s.section, PEER_PREFIX);
+			const genKeys = isTrue(defaults.generate_keys);
+			const genPsk = isTrue(defaults.generate_psk);
+			const addresses = calculatePeerAddresses(s.section,
+				s.formvalue(s.section, 'addresses') ?? uci.get('network', s.section, 'addresses'));
+			const changes = [];
+			const skipped = [];
+			let conflicts = 0;
+
+			function stringify(value) {
+				return L.toArray(value).join('\n');
+			}
+
+			function change(name, value) {
+				const option = section.getOption(name);
+				const element = option ? option.getUIElement(section_id) : null;
+
+				if (!element)
+					return false;
+
+				const wanted = (option instanceof form.DynamicList)
+					? L.toArray(value)
+					: (Array.isArray(value) ? value.join(' ') : value);
+
+				const current = stringify(element.getValue());
+
+				/* an unchecked flag is not a value the user would miss */
+				const filled = current.length && !(option instanceof form.Flag && current == (option.disabled ?? '0'));
+
+				if (filled && current != stringify(wanted))
+					conflicts++;
+
+				changes.push([ element, wanted ]);
+
+				return true;
+			}
+
+			for (let name in defaults) {
+				/* allowed_ips is handled below, together with the calculated address */
+				if (peerDefaultFlags.includes(name) || (name == 'allowed_ips' && addresses.length))
+					continue;
+
+				if (peerDefaultExcludes.includes(name) || !change(name, defaults[name]))
+					skipped.push(PEER_PREFIX + name);
+			}
+
+			/* the calculated peer address goes in front of the configured routes */
+			if (addresses.length)
+				change('allowed_ips', addresses.concat(L.toArray(defaults.allowed_ips)));
+
+			for (let name of [ genKeys ? 'private_key' : null, genKeys ? 'public_key' : null, genPsk ? 'preshared_key' : null ]) {
+				if (name && stringify(section.getUIElement(section_id, name)?.getValue()).length)
+					conflicts++;
+			}
+
+			if (conflicts && !confirm(_('Overwrite %d already filled in field(s) with the configured defaults?').format(conflicts)))
+				return Promise.resolve();
+
+			for (let [ element, value ] of changes)
+				element.setValue(value);
+
+			const tasks = [];
+
+			if (genKeys) {
+				tasks.push(generateKey().then(function(keypair) {
+					section.getUIElement(section_id, 'private_key').setValue(keypair.priv);
+					section.getUIElement(section_id, 'public_key').setValue(keypair.pub);
+
+					/* the export button is gated on the private key being present */
+					const qr = section.map.findElement('.btn.qr-code');
+
+					if (qr)
+						qr.disabled = !keypair.priv;
+				}));
+			}
+
+			if (genPsk) {
+				tasks.push(generatePsk().then(function(psk) {
+					section.getUIElement(section_id, 'preshared_key').setValue(psk);
+				}));
+			}
+
+			return Promise.all(tasks).then(function() {
+				if (skipped.length)
+					ui.addNotification(null, E('p', _('Ignored default(s) without a matching peer setting: %s').format(skipped.join(', '))), 'warning');
+			});
+		};
+
 		o = ss.option(form.Flag, 'disabled', _('Disabled'), _('Enable / Disable peer. Restart wireguard interface to apply changes.'));
 		o.editable = true;
 		o.optional = true;
@@ -662,16 +1011,16 @@ return network.registerProtocol('wireguard', {
 
 		o.modalonly = true;
 
-		o.createPeerConfig = function(section_id, endpoint, ips, eips, dns) {
+		o.createPeerConfig = function(section_id, opts) {
 			const pub = s.formvalue(s.section, 'public_key');
-			const port = s.formvalue(s.section, 'listen_port') || '51820';
 			const prv = this.section.formvalue(section_id, 'private_key');
 			const psk = this.section.formvalue(section_id, 'preshared_key');
-			const eport = this.section.formvalue(section_id, 'endpoint_port');
-			const keep = this.section.formvalue(section_id, 'persistent_keepalive');
+			const port = opts.port || s.formvalue(s.section, 'listen_port') || '51820';
+			const eips = opts.eips, ips = opts.ips, dns = opts.dns;
+			let endpoint = opts.endpoint;
 
 			// If endpoint is IPv6 we must escape it with []
-			if (endpoint.indexOf(':') > 0) {
+			if (endpoint && endpoint.indexOf(':') > 0) {
 				endpoint = '['+endpoint+']';
 			}
 
@@ -679,15 +1028,16 @@ return network.registerProtocol('wireguard', {
 				'[Interface]',
 				'PrivateKey = ' + prv,
 				eips && eips.length ? 'Address = ' + eips.join(', ') : '# Address not defined',
-				eport ? 'ListenPort = ' + eport : '# ListenPort not defined',
+				opts.listen_port ? 'ListenPort = ' + opts.listen_port : '# ListenPort not defined',
 				dns && dns.length ? 'DNS = ' + dns.join(', ') : '# DNS not defined',
+				opts.mtu ? 'MTU = ' + opts.mtu : '# MTU not defined',
 				'',
 				'[Peer]',
 				'PublicKey = ' + pub,
 				psk ? 'PresharedKey = ' + psk : '# PresharedKey not used',
 				ips && ips.length ? 'AllowedIPs = ' + ips.join(', ') : '# AllowedIPs not defined',
 				endpoint ? 'Endpoint = ' + endpoint + ':' + port : '# Endpoint not defined',
-				keep ? 'PersistentKeepAlive = ' + keep : '# PersistentKeepAlive not defined'
+				opts.keepalive ? 'PersistentKeepAlive = ' + opts.keepalive : '# PersistentKeepAlive not defined'
 			].join('\n');
 		};
 
@@ -697,6 +1047,9 @@ return network.registerProtocol('wireguard', {
 			const configGenerator = this.createPeerConfig.bind(this, section_id);
 			const parent = this.map;
 			const eips = this.section.formvalue(section_id, 'allowed_ips');
+			const cdefs = getDefaults(s.section, CLIENT_PREFIX);
+			const peerPort = this.section.formvalue(section_id, 'endpoint_port');
+			const peerKeep = this.section.formvalue(section_id, 'persistent_keepalive');
 
 			return Promise.all([
 				network.getWANNetworks(),
@@ -724,20 +1077,43 @@ return network.registerProtocol('wireguard', {
 				for (let w6Net of w6Nets)
 					hostnames.push.apply(hostnames, w6Net.getIP6Addrs().map(function(ip) { return ip.split('/')[0] }));
 
-				const ips = [ '0.0.0.0/0', '::/0' ];
+				if (cdefs.endpoint_host)
+					hostnames.unshift(cdefs.endpoint_host);
 
-				const dns = [];
+				const ips = cdefs.allowed_ips ? L.toArray(cdefs.allowed_ips) : [ '0.0.0.0/0', '::/0' ];
 
-				if (lnet) {
+				const dns = L.toArray(cdefs.dns);
+
+				if (!dns.length && lnet) {
 					const lanIp = lnet.getIPAddr();
 					if (lanIp) {
 						dns.unshift(lanIp)
 					}
 				}
 
+				const eport = cdefs.endpoint_port || s.formvalue(s.section, 'listen_port') || '51820';
+				const lport = cdefs.listen_port || peerPort || '';
+				const mtu = cdefs.mtu || '';
+				const keep = cdefs.persistent_keepalive || peerKeep || '';
+
+				/* everything the client configuration is made of, read back from
+				 * the dialog so edits take effect immediately */
+				function collectConfig(section, section_id) {
+					return {
+						endpoint: section.getUIElement(section_id, 'endpoint').getValue(),
+						port: section.getUIElement(section_id, 'endpoint_port').getValue(),
+						ips: section.getUIElement(section_id, 'allowed_ips').getValue(),
+						eips: section.getUIElement(section_id, 'addresses').getValue(),
+						dns: section.getUIElement(section_id, 'dns_servers').getValue(),
+						mtu: section.getUIElement(section_id, 'mtu').getValue(),
+						keepalive: section.getUIElement(section_id, 'keepalive').getValue(),
+						listen_port: lport
+					};
+				}
+
 				let qrm, qrs, qro;
 
-				qrm = new form.JSONMap({ config: { endpoint: hostnames[0] || '', allowed_ips: ips, addresses: eips, dns_servers: dns } }, null, _('The generated configuration can be imported into a WireGuard client application to set up a connection towards this device.'));
+				qrm = new form.JSONMap({ config: { endpoint: hostnames[0] || '', endpoint_port: eport, allowed_ips: ips, addresses: eips, dns_servers: dns, mtu: mtu, keepalive: keep } }, null, _('The generated configuration can be imported into a WireGuard client application to set up a connection towards this device.'));
 				qrm.parent = parent;
 
 				qrs = qrm.section(form.NamedSection, 'config');
@@ -745,13 +1121,9 @@ return network.registerProtocol('wireguard', {
 				function handleConfigChange(ev, section_id, value) {
 					const code = this.map.findElement('.qr-code');
 					const conf = this.map.findElement('.client-config');
-					const endpoint = this.section.getUIElement(section_id, 'endpoint');
-					const ips = this.section.getUIElement(section_id, 'allowed_ips');
-					const eips = this.section.getUIElement(section_id, 'addresses');
-					const dns = this.section.getUIElement(section_id, 'dns_servers');
 
 					if (this.isValid(section_id)) {
-						conf.firstChild.data = configGenerator(endpoint.getValue(), ips.getValue(), eips.getValue(), dns.getValue());
+						conf.firstChild.data = configGenerator(collectConfig(this.section, section_id));
 						code.style.opacity = '.5';
 
 						buildSVGQRCode(conf.firstChild.data, code);
@@ -761,6 +1133,12 @@ return network.registerProtocol('wireguard', {
 				qro = qrs.option(form.Value, 'endpoint', _('Connection endpoint'), _('The public hostname or IP address of this system the peer should connect to. This usually is a static public IP address, a static hostname or a DDNS domain.'));
 				qro.datatype = 'or(ipaddr,hostname)';
 				hostnames.forEach(function(hostname) { qro.value(hostname) });
+				qro.onchange = handleConfigChange;
+
+				qro = qrs.option(form.Value, 'endpoint_port', _('Connection endpoint port'), _('The UDP port of this system the peer should connect to.'));
+				qro.datatype = 'port';
+				qro.default = eport;
+				qro.placeholder = '51820';
 				qro.onchange = handleConfigChange;
 
 				qro = qrs.option(form.DynamicList, 'allowed_ips', _('Allowed IPs'), _('IP addresses that are allowed inside the tunnel. The peer will accept tunnelled packets with source IP addresses matching this list and route back packets with matching destination IP.'));
@@ -780,9 +1158,30 @@ return network.registerProtocol('wireguard', {
 				eips.forEach(function(eip) { qro.value(eip) });
 				qro.onchange = handleConfigChange;
 
+				qro = qrs.option(form.Value, 'mtu', _('MTU'), _('Optional. Maximum Transmission Unit of the tunnel interface on the peer.'));
+				qro.datatype = 'range(0,8940)';
+				qro.default = mtu;
+				qro.placeholder = '1420';
+				qro.onchange = handleConfigChange;
+
+				qro = qrs.option(form.Value, 'keepalive', _('Persistent Keep Alive'), _('Optional. Seconds between keep alive messages sent by the peer. Recommended value if the peer is behind a NAT is 25.'));
+				qro.datatype = 'range(0,65535)';
+				qro.default = keep;
+				qro.placeholder = '0';
+				qro.onchange = handleConfigChange;
+
 				qro = qrs.option(form.DummyValue, 'output');
 				qro.renderWidget = function() {
-					const peer_config = configGenerator(hostnames[0], ips, eips, dns);
+					const peer_config = configGenerator({
+						endpoint: hostnames[0],
+						port: eport,
+						ips: ips,
+						eips: eips,
+						dns: dns,
+						mtu: mtu,
+						keepalive: keep,
+						listen_port: lport
+					});
 
 					const node = E('div', {
 						'style': 'display:flex;flex-wrap:wrap;align-items:center;gap:.5em;width:100%'
