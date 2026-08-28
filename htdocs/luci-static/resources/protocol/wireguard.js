@@ -691,8 +691,12 @@ return network.registerProtocol('wireguard', {
 
 		/* the modal clones our options into a section of its own, that clone is
 		 * what owns the rendered UI elements */
+		/* A section added through the grid is renamed when the modal saves the
+		 * stacked map, so the id we were called with is stale by the time the
+		 * dialog is up. This hook is invoked with the final one. */
 		ss.addModalOptions = function(modalSection, section_id, ev) {
 			this.activeModalSection = modalSection;
+			this.activeSectionId = section_id;
 
 			return this.super('addModalOptions', arguments);
 		};
@@ -711,7 +715,7 @@ return network.registerProtocol('wireguard', {
 					'style': 'margin-right:auto',
 					'disabled': Object.keys(defaults).length ? null : '',
 					'data-tooltip': Object.keys(defaults).length ? null : _('No defaults configured. Add peer_* options to the %s interface section in /etc/config/network.').format(s.section),
-					'click': ui.createHandlerFn(this, 'handleLoadDefaults', section_id)
+					'click': ui.createHandlerFn(this, 'handleLoadDefaults', this.activeSectionId ?? section_id)
 				}, [ _('Load defaults') ]);
 
 				row.querySelectorAll('button.load-defaults').forEach(function(stale) {
@@ -808,8 +812,8 @@ return network.registerProtocol('wireguard', {
 
 			if (genKeys) {
 				tasks.push(generateKey().then(function(keypair) {
-					section.getUIElement(section_id, 'private_key').setValue(keypair.priv);
-					section.getUIElement(section_id, 'public_key').setValue(keypair.pub);
+					section.getUIElement(section_id, 'private_key')?.setValue(keypair.priv);
+					section.getUIElement(section_id, 'public_key')?.setValue(keypair.pub);
 
 					/* the export button is gated on the private key being present */
 					const qr = section.map.findElement('.btn.qr-code');
@@ -821,7 +825,7 @@ return network.registerProtocol('wireguard', {
 
 			if (genPsk) {
 				tasks.push(generatePsk().then(function(psk) {
-					section.getUIElement(section_id, 'preshared_key').setValue(psk);
+					section.getUIElement(section_id, 'preshared_key')?.setValue(psk);
 				}));
 			}
 
@@ -1046,7 +1050,15 @@ return network.registerProtocol('wireguard', {
 			const headNode = mapNode.parentNode.querySelector('h4');
 			const configGenerator = this.createPeerConfig.bind(this, section_id);
 			const parent = this.map;
-			const eips = this.section.formvalue(section_id, 'allowed_ips');
+			/* the client's [Interface] Address is its own tunnel address, so keep
+			 * the host entries of allowed_ips and drop the routed ranges */
+			const aips = L.toArray(this.section.formvalue(section_id, 'allowed_ips'));
+			const hips = aips.filter(function(address) {
+				const addr = parseAddress(address);
+
+				return (addr != null && addr.mask == addr.bits);
+			});
+			const eips = hips.length ? hips : aips;
 			const cdefs = getDefaults(s.section, CLIENT_PREFIX);
 			const peerPort = this.section.formvalue(section_id, 'endpoint_port');
 			const peerKeep = this.section.formvalue(section_id, 'persistent_keepalive');
