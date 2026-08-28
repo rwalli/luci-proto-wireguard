@@ -829,10 +829,25 @@ return network.registerProtocol('wireguard', {
 				}));
 			}
 
-			return Promise.all(tasks).then(function() {
-				if (skipped.length)
-					ui.addNotification(null, E('p', _('Ignored default(s) without a matching peer setting: %s').format(skipped.join(', '))), 'warning');
-			});
+			return Promise.all(tasks).then(L.bind(function() {
+				const mapNode = this.getActiveModalMap();
+
+				/* a notification would end up behind the modal overlay, so the
+				 * warning belongs inside the dialog itself */
+				mapNode?.querySelectorAll('.load-defaults-warning').forEach(function(stale) {
+					stale.parentNode.removeChild(stale);
+				});
+
+				if (!skipped.length)
+					return;
+
+				const message = _('Ignored default(s) without a matching peer setting: %s').format(skipped.join(', '));
+
+				if (mapNode)
+					mapNode.insertBefore(E('div', { 'class': 'alert-message warning load-defaults-warning' }, [ message ]), mapNode.firstChild);
+				else
+					ui.addNotification(null, E('p', message), 'warning');
+			}, this));
 		};
 
 		o = ss.option(form.Flag, 'disabled', _('Disabled'), _('Enable / Disable peer. Restart wireguard interface to apply changes.'));
