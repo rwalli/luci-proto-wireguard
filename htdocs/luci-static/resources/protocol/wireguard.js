@@ -235,6 +235,60 @@ function calculatePeerAddresses(ifname, ifaceAddrs) {
 	return rv.map(function(addr) { return '%s/%d'.format(formatAddress(addr), addr.bits) });
 }
 
+/* The editable defaults, in the order they appear in the "Edit defaults" dialog.
+ * `prefix` decides which uci option a field is stored as. */
+function defaultFieldSpecs() {
+	return [
+		{
+			prefix: PEER_PREFIX,
+			name: 'peer',
+			title: _('Defaults for new peers'),
+			description: _('Filled into the peer dialog by <em>Load defaults</em>, on top of a free tunnel address calculated from the interface subnet.'),
+			fields: [
+				{ name: 'allowed_ips', type: form.DynamicList, title: _('Allowed IPs'),
+				  description: _('Routes added after the calculated peer address.'),
+				  props: { datatype: 'ipaddr' } },
+				{ name: 'route_allowed_ips', type: form.Flag, title: _('Route Allowed IPs') },
+				{ name: 'endpoint_host', type: form.Value, title: _('Endpoint Host'),
+				  props: { datatype: 'host', placeholder: 'vpn.example.com' } },
+				{ name: 'endpoint_port', type: form.Value, title: _('Endpoint Port'),
+				  props: { datatype: 'port', placeholder: '51820' } },
+				{ name: 'persistent_keepalive', type: form.Value, title: _('Persistent Keep Alive'),
+				  props: { datatype: 'range(0,65535)', placeholder: '0' } },
+				{ name: 'generate_keys', type: form.Flag, title: _('Generate key pair'),
+				  description: _('Create a key pair for the peer when defaults are loaded.') },
+				{ name: 'generate_psk', type: form.Flag, title: _('Generate preshared key'),
+				  description: _('Create a preshared key when defaults are loaded.') }
+			]
+		},
+		{
+			prefix: CLIENT_PREFIX,
+			name: 'client',
+			title: _('Defaults for the generated client configuration'),
+			description: _('Filled into the <em>Generate configuration…</em> dialog, which turns them into the <code>[Interface]</code> and <code>[Peer]</code> sections of the peer\'s own configuration file.'),
+			fields: [
+				{ name: 'endpoint_host', type: form.Value, title: _('Connection endpoint'),
+				  description: _('The public hostname or IP address of this system the peer connects to.'),
+				  props: { datatype: 'or(ipaddr,hostname)', placeholder: 'vpn.example.com' } },
+				{ name: 'endpoint_port', type: form.Value, title: _('Connection endpoint port'),
+				  props: { datatype: 'port', placeholder: '51820' } },
+				{ name: 'allowed_ips', type: form.DynamicList, title: _('Allowed IPs'),
+				  description: _('Networks the peer routes into the tunnel.'),
+				  props: { datatype: 'ipaddr' } },
+				{ name: 'dns', type: form.DynamicList, title: _('DNS Servers'),
+				  props: { datatype: 'ipaddr' } },
+				{ name: 'mtu', type: form.Value, title: _('MTU'),
+				  props: { datatype: 'range(0,8940)', placeholder: '1420' } },
+				{ name: 'listen_port', type: form.Value, title: _('Listen Port'),
+				  description: _('Port the peer itself listens on.'),
+				  props: { datatype: 'port' } },
+				{ name: 'persistent_keepalive', type: form.Value, title: _('Persistent Keep Alive'),
+				  props: { datatype: 'range(0,65535)', placeholder: '0' } }
+			]
+		}
+	];
+}
+
 var qrIcon = '<svg viewBox="0 0 29 29" xmlns="http://www.w3.org/2000/svg"><path fill="#fff" d="M0 0h29v29H0z"/><path d="M4 4h1v1H4zM5 4h1v1H5zM6 4h1v1H6zM7 4h1v1H7zM8 4h1v1H8zM9 4h1v1H9zM10 4h1v1h-1zM12 4h1v1h-1zM13 4h1v1h-1zM14 4h1v1h-1zM15 4h1v1h-1zM16 4h1v1h-1zM18 4h1v1h-1zM19 4h1v1h-1zM20 4h1v1h-1zM21 4h1v1h-1zM22 4h1v1h-1zM23 4h1v1h-1zM24 4h1v1h-1zM4 5h1v1H4zM10 5h1v1h-1zM12 5h1v1h-1zM14 5h1v1h-1zM16 5h1v1h-1zM18 5h1v1h-1zM24 5h1v1h-1zM4 6h1v1H4zM6 6h1v1H6zM7 6h1v1H7zM8 6h1v1H8zM10 6h1v1h-1zM12 6h1v1h-1zM18 6h1v1h-1zM20 6h1v1h-1zM21 6h1v1h-1zM22 6h1v1h-1zM24 6h1v1h-1zM4 7h1v1H4zM6 7h1v1H6zM7 7h1v1H7zM8 7h1v1H8zM10 7h1v1h-1zM12 7h1v1h-1zM13 7h1v1h-1zM14 7h1v1h-1zM15 7h1v1h-1zM18 7h1v1h-1zM20 7h1v1h-1zM21 7h1v1h-1zM22 7h1v1h-1zM24 7h1v1h-1zM4 8h1v1H4zM6 8h1v1H6zM7 8h1v1H7zM8 8h1v1H8zM10 8h1v1h-1zM16 8h1v1h-1zM18 8h1v1h-1zM20 8h1v1h-1zM21 8h1v1h-1zM22 8h1v1h-1zM24 8h1v1h-1zM4 9h1v1H4zM10 9h1v1h-1zM12 9h1v1h-1zM13 9h1v1h-1zM15 9h1v1h-1zM18 9h1v1h-1zM24 9h1v1h-1zM4 10h1v1H4zM5 10h1v1H5zM6 10h1v1H6zM7 10h1v1H7zM8 10h1v1H8zM9 10h1v1H9zM10 10h1v1h-1zM12 10h1v1h-1zM14 10h1v1h-1zM16 10h1v1h-1zM18 10h1v1h-1zM19 10h1v1h-1zM20 10h1v1h-1zM21 10h1v1h-1zM22 10h1v1h-1zM23 10h1v1h-1zM24 10h1v1h-1zM13 11h1v1h-1zM14 11h1v1h-1zM15 11h1v1h-1zM16 11h1v1h-1zM4 12h1v1H4zM5 12h1v1H5zM8 12h1v1H8zM9 12h1v1H9zM10 12h1v1h-1zM13 12h1v1h-1zM15 12h1v1h-1zM19 12h1v1h-1zM21 12h1v1h-1zM22 12h1v1h-1zM23 12h1v1h-1zM24 12h1v1h-1zM5 13h1v1H5zM6 13h1v1H6zM8 13h1v1H8zM11 13h1v1h-1zM13 13h1v1h-1zM14 13h1v1h-1zM15 13h1v1h-1zM16 13h1v1h-1zM19 13h1v1h-1zM22 13h1v1h-1zM4 14h1v1H4zM5 14h1v1H5zM9 14h1v1H9zM10 14h1v1h-1zM11 14h1v1h-1zM15 14h1v1h-1zM18 14h1v1h-1zM19 14h1v1h-1zM20 14h1v1h-1zM21 14h1v1h-1zM22 14h1v1h-1zM23 14h1v1h-1zM7 15h1v1H7zM8 15h1v1H8zM9 15h1v1H9zM11 15h1v1h-1zM12 15h1v1h-1zM13 15h1v1h-1zM17 15h1v1h-1zM18 15h1v1h-1zM20 15h1v1h-1zM21 15h1v1h-1zM23 15h1v1h-1zM4 16h1v1H4zM6 16h1v1H6zM10 16h1v1h-1zM11 16h1v1h-1zM13 16h1v1h-1zM14 16h1v1h-1zM16 16h1v1h-1zM17 16h1v1h-1zM18 16h1v1h-1zM22 16h1v1h-1zM23 16h1v1h-1zM24 16h1v1h-1zM12 17h1v1h-1zM16 17h1v1h-1zM17 17h1v1h-1zM18 17h1v1h-1zM4 18h1v1H4zM5 18h1v1H5zM6 18h1v1H6zM7 18h1v1H7zM8 18h1v1H8zM9 18h1v1H9zM10 18h1v1h-1zM14 18h1v1h-1zM16 18h1v1h-1zM17 18h1v1h-1zM21 18h1v1h-1zM22 18h1v1h-1zM23 18h1v1h-1zM4 19h1v1H4zM10 19h1v1h-1zM12 19h1v1h-1zM13 19h1v1h-1zM15 19h1v1h-1zM16 19h1v1h-1zM19 19h1v1h-1zM21 19h1v1h-1zM23 19h1v1h-1zM24 19h1v1h-1zM4 20h1v1H4zM6 20h1v1H6zM7 20h1v1H7zM8 20h1v1H8zM10 20h1v1h-1zM12 20h1v1h-1zM13 20h1v1h-1zM15 20h1v1h-1zM18 20h1v1h-1zM19 20h1v1h-1zM20 20h1v1h-1zM22 20h1v1h-1zM23 20h1v1h-1zM24 20h1v1h-1zM4 21h1v1H4zM6 21h1v1H6zM7 21h1v1H7zM8 21h1v1H8zM10 21h1v1h-1zM13 21h1v1h-1zM15 21h1v1h-1zM16 21h1v1h-1zM19 21h1v1h-1zM21 21h1v1h-1zM23 21h1v1h-1zM24 21h1v1h-1zM4 22h1v1H4zM6 22h1v1H6zM7 22h1v1H7zM8 22h1v1H8zM10 22h1v1h-1zM13 22h1v1h-1zM15 22h1v1h-1zM18 22h1v1h-1zM19 22h1v1h-1zM20 22h1v1h-1zM21 22h1v1h-1zM22 22h1v1h-1zM4 23h1v1H4zM10 23h1v1h-1zM12 23h1v1h-1zM13 23h1v1h-1zM14 23h1v1h-1zM17 23h1v1h-1zM18 23h1v1h-1zM20 23h1v1h-1zM22 23h1v1h-1zM4 24h1v1H4zM5 24h1v1H5zM6 24h1v1H6zM7 24h1v1H7zM8 24h1v1H8zM9 24h1v1H9zM10 24h1v1h-1zM12 24h1v1h-1zM13 24h1v1h-1zM14 24h1v1h-1zM16 24h1v1h-1zM17 24h1v1h-1zM18 24h1v1h-1zM22 24h1v1h-1zM24 24h1v1h-1z"/></svg>';
 
 function validateBase64(section_id, value) {
@@ -682,6 +736,11 @@ return network.registerProtocol('wireguard', {
 				'click': ui.createHandlerFn(this, 'handleConfigImport', 'peer')
 			}, [ _('Import configuration as peer…') ]));
 
+			nodes.appendChild(E('button', {
+				'class': 'btn cbi-button edit-defaults',
+				'click': ui.createHandlerFn(this, 'handleEditDefaults')
+			}, [ _('Edit defaults…') ]));
+
 			return nodes;
 		};
 
@@ -712,16 +771,23 @@ return network.registerProtocol('wireguard', {
 				const defaults = getDefaults(s.section, PEER_PREFIX);
 				const button = E('button', {
 					'class': 'btn cbi-button load-defaults',
-					'style': 'margin-right:auto',
+					'style': 'margin-right:.5em',
 					'disabled': Object.keys(defaults).length ? null : '',
 					'data-tooltip': Object.keys(defaults).length ? null : _('No defaults configured. Add peer_* options to the %s interface section in /etc/config/network.').format(s.section),
 					'click': ui.createHandlerFn(this, 'handleLoadDefaults', this.activeSectionId ?? section_id)
 				}, [ _('Load defaults') ]);
 
-				row.querySelectorAll('button.load-defaults').forEach(function(stale) {
+				const editButton = E('button', {
+					'class': 'btn cbi-button edit-defaults',
+					'style': 'margin-right:auto',
+					'click': ui.createHandlerFn(this, 'handleEditDefaults')
+				}, [ _('Edit defaults…') ]);
+
+				row.querySelectorAll('button.load-defaults, button.edit-defaults').forEach(function(stale) {
 					stale.parentNode.removeChild(stale);
 				});
 
+				row.insertBefore(editButton, row.firstChild);
 				row.insertBefore(button, row.firstChild);
 
 				/* this dialog is stacked onto the interface dialog and shares its
@@ -730,8 +796,9 @@ return network.registerProtocol('wireguard', {
 					if (mapNode.isConnected && !mapNode.classList.contains('hidden'))
 						return;
 
-					if (button.parentNode)
-						button.parentNode.removeChild(button);
+					for (let node of [ button, editButton ])
+						if (node.parentNode)
+							node.parentNode.removeChild(node);
 
 					observer.disconnect();
 				});
@@ -742,6 +809,126 @@ return network.registerProtocol('wireguard', {
 					attributes: true,
 					attributeFilter: [ 'class' ]
 				});
+			}, this));
+		};
+
+		/* A sub-view over the peer dialog (or over the interface dialog, when
+		 * opened from the peers tab) editing the prefixed interface options. */
+		ss.handleEditDefaults = function(ev) {
+			const mapNode = this.getActiveModalMap();
+			const headNode = mapNode?.parentNode.querySelector('h4');
+			const buttonRow = mapNode?.parentNode.querySelector('div.button-row');
+
+			if (!mapNode || !headNode || !buttonRow)
+				return;
+
+			const specs = defaultFieldSpecs();
+			const data = {};
+			const entries = [];
+
+			specs.forEach(function(spec) {
+				const values = getDefaults(s.section, spec.prefix);
+				const stored = data[spec.name] = {};
+
+				spec.fields.forEach(function(field) {
+					if (values[field.name] != null)
+						stored[field.name] = (field.type == form.DynamicList)
+							? L.toArray(values[field.name]) : values[field.name];
+				});
+			});
+
+			const dm = new form.JSONMap(data, null,
+				_('Stored as <code>peer_*</code> and <code>client_*</code> options on the <code>%s</code> interface section in <code>/etc/config/network</code>. Fields left empty are removed.').format(s.section));
+
+			specs.forEach(function(spec) {
+				const ds = dm.section(form.NamedSection, spec.name, 'defaults', spec.title, spec.description);
+
+				spec.fields.forEach(function(field) {
+					const o = ds.option(field.type, field.name, field.title, field.description);
+
+					Object.assign(o, field.props ?? {});
+					entries.push({ spec: spec, field: field, option: o });
+				});
+			});
+
+			return dm.render().then(L.bind(function(nodes) {
+				const restore = function() {
+					nodes.parentNode.removeChild(nodes.nextElementSibling);
+					nodes.parentNode.removeChild(nodes);
+					mapNode.style.display = '';
+					buttonRow.style.display = '';
+					headNode.removeChild(headNode.lastChild);
+				};
+
+				const store = ui.createHandlerFn(this, function() {
+					nodes.querySelectorAll('.edit-defaults-error').forEach(function(stale) {
+						stale.parentNode.removeChild(stale);
+					});
+
+					/* isValid() only reports the last cached state, so ask the
+					 * widgets to validate what they currently hold */
+					const invalid = entries.filter(function(entry) {
+						entry.option.triggerValidation(entry.spec.name);
+
+						return !entry.option.isValid(entry.spec.name);
+					});
+
+					if (invalid.length) {
+						nodes.insertBefore(E('div', { 'class': 'alert-message warning edit-defaults-error' }, [
+							_('Cannot save: %s').format(invalid.map(function(entry) {
+								const error = entry.option.getValidationError(entry.spec.name);
+
+								return error ? '%s (%s)'.format(entry.field.title, error) : entry.field.title;
+							}).join(', '))
+						]), nodes.firstChild);
+
+						return;
+					}
+
+					for (let entry of entries) {
+						const option = entry.spec.prefix + entry.field.name;
+						const value = entry.option.getUIElement(entry.spec.name).getValue();
+						const unset = (value == null || value === '' ||
+							(Array.isArray(value) && !value.length) ||
+							(entry.field.type == form.Flag && value != '1'));
+
+						if (unset)
+							uci.unset('network', s.section, option);
+						else
+							uci.set('network', s.section, option, value);
+					}
+
+					return uci.save().then(function() {
+						const loadButton = buttonRow.querySelector('button.load-defaults');
+
+						/* the peer dialog may have rendered the button as disabled */
+						if (loadButton) {
+							const count = Object.keys(getDefaults(s.section, PEER_PREFIX)).length;
+
+							loadButton.disabled = !count;
+
+							if (count)
+								loadButton.removeAttribute('data-tooltip');
+						}
+
+						restore();
+					});
+				});
+
+				mapNode.style.display = 'none';
+				buttonRow.style.display = 'none';
+				headNode.appendChild(E('span', [ ' » ', _('Edit defaults') ]));
+				mapNode.parentNode.appendChild(E([], [
+					nodes,
+					E('div', { 'class': 'right' }, [
+						E('button', { 'class': 'btn cbi-button', 'click': restore }, [ _('Cancel') ]),
+						' ',
+						E('button', {
+							'class': 'btn cbi-button cbi-button-positive important',
+							'click': store
+						}, [ _('Save defaults') ])
+					])
+				]));
 			}, this));
 		};
 

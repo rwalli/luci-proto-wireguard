@@ -21,7 +21,14 @@ is nothing to `npm install`.
         | ssh root@10.9.0.133 'cat > /www/luci-static/resources/protocol/wireguard.js'
 
     CHROME=./chrome-headless-shell/linux-*/chrome-headless-shell-linux64/chrome-headless-shell \
-        node test/browser/test-full.js
+        node test/browser/test-full.js      # Load defaults + configuration export
+    CHROME=… node test/browser/test-editor.js shot.png   # the Edit defaults dialog
+
+`test-full.js` takes the host addresses already in use in `USED` (comma separated) so it can tell a
+freshly calculated address from an occupied one:
+
+    USED=$(ssh root@10.9.0.133 "uci show network | sed -n 's/.*allowed_ips=//p' \
+        | tr -d \"'\" | tr ' ' '\n' | sed 's#/32$##' | tr '\n' ','")
 
 The test assumes the router at `10.9.0.133` with a blank root password, a `wg0`
 interface holding `10.10.11.1/24`, and the `peer_*` / `client_*` defaults set on
