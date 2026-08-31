@@ -14,6 +14,8 @@ const peerByDescription = (desc) => ev(`(async () => {
 
 (async () => {
 	await d.connect();
+	/* the default headless viewport is small enough to push the warning band out of view */
+	await d.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
 	await d.navigate(HOST + '/cgi-bin/luci/');
 	await ev(d.HELPERS);
 	await ev(`(() => { const u = document.querySelector('input[name=luci_username]'); if (!u) return 0;
@@ -27,7 +29,9 @@ const peerByDescription = (desc) => ev(`(async () => {
 		const row = await __wait(() => [...document.querySelectorAll('tr.cbi-section-table-row')].find(r => /^wg0/.test(r.textContent.trim())), 15000);
 		row.querySelector('.cbi-button-edit').click();
 		await __wait(() => document.querySelector('.modal .cbi-map'));
-		(await __wait(() => __find('.cbi-tab, .cbi-tab-disabled, li a', '^\\\\s*Peers'))).click();
+		/* the tab handler sits on the anchor: clicking the <li> leaves the pane hidden */
+		(await __wait(() => [...document.querySelectorAll('.modal ul.cbi-tabmenu li > a')].find(a => a.textContent.trim() == 'Peers'))).click();
+		await __wait(() => __find('.modal ul.cbi-tabmenu li.cbi-tab', '^Peers$'));
 		await __wait(() => document.querySelector('.modal button.quick-add-peer'), 10000);
 		return 1;
 	})()`);
@@ -39,16 +43,36 @@ const peerByDescription = (desc) => ev(`(async () => {
 			order: [...btn.parentNode.children].map(e => (e.textContent || e.placeholder || '').trim()),
 			enabled: !btn.disabled && !inp.disabled,
 			placeholder: inp?.placeholder,
-			besideDefaults: btn.previousElementSibling === inp && inp.previousElementSibling?.classList.contains('edit-defaults')
+			besideDefaults: inp.previousElementSibling === btn && btn.previousElementSibling?.classList.contains('edit-defaults')
 		};
 	})()`);
-	check('quick add controls sit next to Edit defaults', row.besideDefaults, row);
-	check('enabled while peer_* defaults exist', row.enabled, row);
+	check('quick add button follows Edit defaults, the field follows the button', row.besideDefaults, row);
+	check('both controls live', row.enabled, row);
 	check('description field has a placeholder', /description/i.test(row.placeholder ?? ''), row);
+
+	/* ---- pressing it with an empty field warns instead of adding ---------- */
+	const countPeers = () => ev(`(async () => (await L.require('uci')).sections('network', 'wireguard_wg0').length)()`);
+	const beforeEmpty = await countPeers();
+	await ev(`(async () => {
+		document.querySelector('.modal input.quick-add-description').value = '   ';
+		document.querySelector('.modal button.quick-add-peer').click();
+		await new Promise(r => setTimeout(r, 1200));
+		return 1;
+	})()`);
+	const emptyWarning = await ev(`(() => {
+		const n = document.querySelector('.modal .cbi-map:not(.hidden) .quick-add-warning');
+		if (!n) return null;
+		n.scrollIntoView({ block: 'center' });
+		const r = n.getBoundingClientRect();
+		return { text: n.textContent, onTop: n.contains(document.elementFromPoint(r.left + r.width / 2, r.top + 10)) };
+	})()`);
+	check('an empty description warns, visibly', /description/i.test(emptyWarning?.text ?? '') && emptyWarning?.onTop === true, emptyWarning);
+	check('an empty description adds no peer', (await countPeers()) === beforeEmpty, [beforeEmpty, await countPeers()]);
+	check('the description field keeps the focus', await ev(`document.activeElement === document.querySelector('.modal input.quick-add-description')`), 'not focused');
 
 	/* ---- one press -------------------------------------------------------- */
 	const desc1 = 'Quick test ' + Date.now();
-	const before = await ev(`(async () => (await L.require('uci')).sections('network', 'wireguard_wg0').length)()`);
+	const before = await countPeers();
 
 	await ev(`(async () => {
 		const inp = document.querySelector('.modal input.quick-add-description');
@@ -59,7 +83,7 @@ const peerByDescription = (desc) => ev(`(async () => {
 	})()`);
 
 	const p1 = await peerByDescription(desc1);
-	check('a peer was created', p1 != null, { before, after: await ev(`(async () => (await L.require('uci')).sections('network', 'wireguard_wg0').length)()`) });
+	check('a peer was created', p1 != null, { before, after: await countPeers() });
 
 	const used = (process.env.USED || '').split(',').filter(Boolean);
 	const isFreeHost = (v) => /^10\.10\.11\.\d+\/32$/.test(v ?? '') && !used.includes(String(v).split('/')[0]) && v !== '10.10.11.1/32';
@@ -79,6 +103,7 @@ const peerByDescription = (desc) => ev(`(async () => {
 	   set UNKNOWN_DEFAULT (see test-full.js) to exercise the warning band instead */
 	const unknown = process.env.UNKNOWN_DEFAULT;
 	const warning = await ev(`document.querySelector('.modal .quick-add-warning')?.textContent ?? null`);
+	check('the earlier warning is cleared by a successful add', unknown ? true : !/description/i.test(warning ?? ''), warning);
 	check(unknown ? `skipped default ${unknown} warned about after a quick add` : 'no warning band for a clean set of defaults',
 		unknown ? new RegExp(unknown).test(warning ?? '') : warning === null, warning);
 

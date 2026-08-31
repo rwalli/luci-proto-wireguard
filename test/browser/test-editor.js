@@ -20,7 +20,9 @@ const ev = (x) => d.evaluate(x);
 		const row = await __wait(() => [...document.querySelectorAll('tr.cbi-section-table-row')].find(r => /^wg0/.test(r.textContent.trim())), 15000);
 		row.querySelector('.cbi-button-edit').click();
 		await __wait(() => document.querySelector('.modal .cbi-map'));
-		(await __wait(() => __find('.cbi-tab, .cbi-tab-disabled, li a', '^\\\\s*Peers'))).click();
+		/* the tab handler sits on the anchor: clicking the <li> leaves the pane hidden */
+		(await __wait(() => [...document.querySelectorAll('.modal ul.cbi-tabmenu li > a')].find(a => a.textContent.trim() == 'Peers'))).click();
+		await __wait(() => __find('.modal ul.cbi-tabmenu li.cbi-tab', '^Peers$'));
 		await __wait(() => __find('.modal button, .modal .btn', 'Add peer'));
 		return 1;
 	})()`);

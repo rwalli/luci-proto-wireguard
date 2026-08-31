@@ -70,7 +70,7 @@ function noDefaultsHint(ifname) {
 function refreshDefaultsControls(ifname) {
 	var count = Object.keys(getDefaults(ifname, PEER_PREFIX)).length;
 
-	document.querySelectorAll('.load-defaults, .quick-add-peer, .quick-add-description').forEach(function(node) {
+	document.querySelectorAll('.load-defaults').forEach(function(node) {
 		node.disabled = !count;
 
 		if (count)
@@ -774,7 +774,6 @@ return network.registerProtocol('wireguard', {
 
 		ss.renderSectionAdd = function(/* ... */) {
 			const nodes = this.super('renderSectionAdd', arguments);
-			const hasDefaults = Object.keys(getDefaults(s.section, PEER_PREFIX)).length > 0;
 
 			nodes.appendChild(E('button', {
 				'class': 'btn',
@@ -788,8 +787,6 @@ return network.registerProtocol('wireguard', {
 
 			const quickButton = E('button', {
 				'class': 'btn cbi-button cbi-button-add quick-add-peer',
-				'disabled': hasDefaults ? null : '',
-				'data-tooltip': hasDefaults ? null : noDefaultsHint(s.section),
 				'title': _('Create a peer from the defaults, with a free tunnel address.')
 			}, [ _('Quick add peer') ]);
 
@@ -798,8 +795,6 @@ return network.registerProtocol('wireguard', {
 				'class': 'cbi-input-text quick-add-description',
 				'style': 'width:12em;margin:0 .5em',
 				'placeholder': _('Peer description'),
-				'disabled': hasDefaults ? null : '',
-				'data-tooltip': hasDefaults ? null : noDefaultsHint(s.section),
 				'keydown': function(ev) {
 					if (ev.key == 'Enter') {
 						ev.preventDefault();
@@ -810,8 +805,8 @@ return network.registerProtocol('wireguard', {
 
 			quickButton.addEventListener('click', ui.createHandlerFn(this, 'handleQuickAdd', quickInput));
 
-			nodes.appendChild(quickInput);
 			nodes.appendChild(quickButton);
+			nodes.appendChild(quickInput);
 
 			return nodes;
 		};
@@ -1086,7 +1081,23 @@ return network.registerProtocol('wireguard', {
 		 * tunnel address and the typed description, no dialog in between. */
 		ss.handleQuickAdd = function(input, ev) {
 			const defaults = getDefaults(s.section, PEER_PREFIX);
-			const description = (input.value ?? '').trim();
+			/* the typed description wins over a configured default */
+			const description = (input.value ?? '').trim() || defaults.description || '';
+			const problems = [];
+
+			if (!Object.keys(defaults).length)
+				problems.push(_('No defaults to add a peer from. Press Edit defaults… to configure them.'));
+
+			if (!description)
+				problems.push(_('Enter a description for the new peer.'));
+
+			if (problems.length) {
+				setModalWarning(this.getActiveModalMap(), 'quick-add-warning', problems.join(' '));
+				input.focus();
+
+				return Promise.resolve();
+			}
+
 			const addresses = calculatePeerAddresses(s.section,
 				s.formvalue(s.section, 'addresses') ?? uci.get('network', s.section, 'addresses'));
 			const skipped = [];
@@ -1110,9 +1121,7 @@ return network.registerProtocol('wireguard', {
 			if (addresses.length)
 				uci.set('network', sid, 'allowed_ips', addresses.concat(L.toArray(defaults.allowed_ips)));
 
-			/* the typed description wins over a configured default */
-			if (description)
-				uci.set('network', sid, 'description', description);
+			uci.set('network', sid, 'description', description);
 
 			const tasks = [];
 
