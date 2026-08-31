@@ -111,7 +111,10 @@ const modalFields = `(() => {
 	check('export: MTU from client_mtu', /^MTU = 1380$/m.test(conf), conf);
 	check('export: DNS from client_dns', /^DNS = 10\.10\.11\.1$/m.test(conf), conf);
 	check('export: endpoint from client_endpoint_host/port', /^Endpoint = endpoint\.example\.com:1234$/m.test(conf), conf);
-	check('export: AllowedIPs from client_allowed_ips', /^AllowedIPs = 10\.10\.11\.0\/24, 10\.0\.0\.0\/24$/m.test(conf), conf);
+	/* read the expectation out of uci rather than hardcoding it, the defaults are meant to be edited */
+	const clientAllowed = await ev(`(async () => L.toArray((await L.require('uci')).get('network', 'wg0', 'client_allowed_ips')).join(', '))()`);
+	check('export: AllowedIPs from client_allowed_ips',
+		new RegExp('^AllowedIPs = ' + clientAllowed.replace(/[.\/]/g, '\\$&') + '$', 'm').test(conf), { clientAllowed, conf });
 	check('export: keepalive from client_persistent_keepalive', /^PersistentKeepAlive = 25$/m.test(conf), conf);
 	check('export: Address is the host entry only, routes dropped',
 		new RegExp('^Address = ' + g.allowed_ips[0].replace(/[./]/g, '\\$&') + '$', 'm').test(conf) && !/^Address =.*10\.0\.0\.0/m.test(conf), conf);
