@@ -61,6 +61,50 @@ function isTrue(value) {
 	return (value == '1' || value == 'true' || value == 'yes' || value == 'on');
 }
 
+function noDefaultsHint(ifname) {
+	return _('No defaults configured. Add peer_* options to the %s interface section in /etc/config/network.').format(ifname);
+}
+
+/* The controls that need peer defaults are rendered before the defaults dialog
+ * can change them, so refresh their state after it has saved. */
+function refreshDefaultsControls(ifname) {
+	var count = Object.keys(getDefaults(ifname, PEER_PREFIX)).length;
+
+	document.querySelectorAll('.load-defaults, .quick-add-peer, .quick-add-description').forEach(function(node) {
+		node.disabled = !count;
+
+		if (count)
+			node.removeAttribute('data-tooltip');
+		else
+			node.setAttribute('data-tooltip', noDefaultsHint(ifname));
+	});
+}
+
+/* A notification would end up behind the modal overlay, so a warning raised
+ * from a dialog is shown inside the dialog itself. */
+function setModalWarning(mapNode, className, message) {
+	if (mapNode)
+		mapNode.querySelectorAll('.' + className).forEach(function(stale) {
+			stale.parentNode.removeChild(stale);
+		});
+
+	if (!message)
+		return;
+
+	if (mapNode)
+		mapNode.insertBefore(E('div', { 'class': 'alert-message warning ' + className }, [ message ]), mapNode.firstChild);
+	else
+		ui.addNotification(null, E('p', message), 'warning');
+}
+
+/* uci values are strings or lists, the peer option decides which one it takes */
+function defaultFieldValue(option, value) {
+	if (option instanceof form.DynamicList)
+		return L.toArray(value);
+
+	return Array.isArray(value) ? value.join(' ') : value;
+}
+
 function parseAddress(address) {
 	var parts = String(address).trim().split('/'),
 	    words = validation.parseIPv4(parts[0]),
@@ -730,6 +774,7 @@ return network.registerProtocol('wireguard', {
 
 		ss.renderSectionAdd = function(/* ... */) {
 			const nodes = this.super('renderSectionAdd', arguments);
+			const hasDefaults = Object.keys(getDefaults(s.section, PEER_PREFIX)).length > 0;
 
 			nodes.appendChild(E('button', {
 				'class': 'btn',
@@ -740,6 +785,33 @@ return network.registerProtocol('wireguard', {
 				'class': 'btn cbi-button edit-defaults',
 				'click': ui.createHandlerFn(this, 'handleEditDefaults')
 			}, [ _('Edit defaults…') ]));
+
+			const quickButton = E('button', {
+				'class': 'btn cbi-button cbi-button-add quick-add-peer',
+				'disabled': hasDefaults ? null : '',
+				'data-tooltip': hasDefaults ? null : noDefaultsHint(s.section),
+				'title': _('Create a peer from the defaults, with a free tunnel address.')
+			}, [ _('Quick add peer') ]);
+
+			const quickInput = E('input', {
+				'type': 'text',
+				'class': 'cbi-input-text quick-add-description',
+				'style': 'width:12em;margin:0 .5em',
+				'placeholder': _('Peer description'),
+				'disabled': hasDefaults ? null : '',
+				'data-tooltip': hasDefaults ? null : noDefaultsHint(s.section),
+				'keydown': function(ev) {
+					if (ev.key == 'Enter') {
+						ev.preventDefault();
+						quickButton.click();
+					}
+				}
+			});
+
+			quickButton.addEventListener('click', ui.createHandlerFn(this, 'handleQuickAdd', quickInput));
+
+			nodes.appendChild(quickInput);
+			nodes.appendChild(quickButton);
 
 			return nodes;
 		};
@@ -773,7 +845,7 @@ return network.registerProtocol('wireguard', {
 					'class': 'btn cbi-button load-defaults',
 					'style': 'margin-right:.5em',
 					'disabled': Object.keys(defaults).length ? null : '',
-					'data-tooltip': Object.keys(defaults).length ? null : _('No defaults configured. Add peer_* options to the %s interface section in /etc/config/network.').format(s.section),
+					'data-tooltip': Object.keys(defaults).length ? null : noDefaultsHint(s.section),
 					'click': ui.createHandlerFn(this, 'handleLoadDefaults', this.activeSectionId ?? section_id)
 				}, [ _('Load defaults') ]);
 
@@ -899,18 +971,8 @@ return network.registerProtocol('wireguard', {
 					}
 
 					return uci.save().then(function() {
-						const loadButton = buttonRow.querySelector('button.load-defaults');
-
-						/* the peer dialog may have rendered the button as disabled */
-						if (loadButton) {
-							const count = Object.keys(getDefaults(s.section, PEER_PREFIX)).length;
-
-							loadButton.disabled = !count;
-
-							if (count)
-								loadButton.removeAttribute('data-tooltip');
-						}
-
+						/* the controls gated on defaults were rendered before this dialog */
+						refreshDefaultsControls(s.section);
 						restore();
 					});
 				});
@@ -954,9 +1016,7 @@ return network.registerProtocol('wireguard', {
 				if (!element)
 					return false;
 
-				const wanted = (option instanceof form.DynamicList)
-					? L.toArray(value)
-					: (Array.isArray(value) ? value.join(' ') : value);
+				const wanted = defaultFieldValue(option, value);
 
 				const current = stringify(element.getValue());
 
@@ -1017,23 +1077,74 @@ return network.registerProtocol('wireguard', {
 			}
 
 			return Promise.all(tasks).then(L.bind(function() {
-				const mapNode = this.getActiveModalMap();
+				setModalWarning(this.getActiveModalMap(), 'load-defaults-warning', skipped.length
+					? _('Ignored default(s) without a matching peer setting: %s').format(skipped.join(', ')) : null);
+			}, this));
+		};
 
-				/* a notification would end up behind the modal overlay, so the
-				 * warning belongs inside the dialog itself */
-				mapNode?.querySelectorAll('.load-defaults-warning').forEach(function(stale) {
-					stale.parentNode.removeChild(stale);
-				});
+		/* Creates a peer straight from the peers tab: the defaults, a free
+		 * tunnel address and the typed description, no dialog in between. */
+		ss.handleQuickAdd = function(input, ev) {
+			const defaults = getDefaults(s.section, PEER_PREFIX);
+			const description = (input.value ?? '').trim();
+			const addresses = calculatePeerAddresses(s.section,
+				s.formvalue(s.section, 'addresses') ?? uci.get('network', s.section, 'addresses'));
+			const skipped = [];
+			const sid = uci.add('network', 'wireguard_%s'.format(s.section));
 
-				if (!skipped.length)
-					return;
+			for (let name in defaults) {
+				const option = this.getOption(name);
 
-				const message = _('Ignored default(s) without a matching peer setting: %s').format(skipped.join(', '));
+				/* allowed_ips is written below, together with the calculated address */
+				if (peerDefaultFlags.includes(name) || (name == 'allowed_ips' && addresses.length))
+					continue;
 
-				if (mapNode)
-					mapNode.insertBefore(E('div', { 'class': 'alert-message warning load-defaults-warning' }, [ message ]), mapNode.firstChild);
-				else
-					ui.addNotification(null, E('p', message), 'warning');
+				if (peerDefaultExcludes.includes(name) || !option) {
+					skipped.push(PEER_PREFIX + name);
+					continue;
+				}
+
+				uci.set('network', sid, name, defaultFieldValue(option, defaults[name]));
+			}
+
+			if (addresses.length)
+				uci.set('network', sid, 'allowed_ips', addresses.concat(L.toArray(defaults.allowed_ips)));
+
+			/* the typed description wins over a configured default */
+			if (description)
+				uci.set('network', sid, 'description', description);
+
+			const tasks = [];
+
+			if (isTrue(defaults.generate_keys)) {
+				tasks.push(generateKey().then(function(keypair) {
+					uci.set('network', sid, 'private_key', keypair.priv);
+					uci.set('network', sid, 'public_key', keypair.pub);
+				}));
+			}
+
+			if (isTrue(defaults.generate_psk)) {
+				tasks.push(generatePsk().then(function(psk) {
+					uci.set('network', sid, 'preshared_key', psk);
+				}));
+			}
+
+			return Promise.all(tasks).then(L.bind(function() {
+				input.value = '';
+
+				/* saving stages the peer and re-renders the grid, so the new
+				 * row and its calculated address are visible right away */
+				return this.map.save(null, true);
+			}, this)).then(L.bind(function() {
+				const warnings = [];
+
+				if (skipped.length)
+					warnings.push(_('Ignored default(s) without a matching peer setting: %s').format(skipped.join(', ')));
+
+				if (!isTrue(defaults.generate_keys))
+					warnings.push(_('The new peer has no key pair, as the defaults do not generate one.'));
+
+				setModalWarning(this.getActiveModalMap(), 'quick-add-warning', warnings.join(' '));
 			}, this));
 		};
 
