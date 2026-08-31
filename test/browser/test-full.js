@@ -82,12 +82,16 @@ const modalFields = `(() => {
 	check('peer 2: different unused address, staged peer 1 counted',
 		isFreeHost(g.allowed_ips?.[0]) && g.allowed_ips[0] !== f.allowed_ips[0] && g.allowed_ips?.[1] === '10.0.0.0/24',
 		{ peer1: f.allowed_ips, peer2: g.allowed_ips });
-	check('skipped defaults warned about inside the dialog, above the overlay', await ev(`(() => {
+	/* set UNKNOWN_DEFAULT to a peer_* option no peer field matches (e.g. UNKNOWN_DEFAULT=peer_mtu
+	   after `uci set network.wg0.peer_mtu=1380`) to exercise the skipped-key warning */
+	const unknown = process.env.UNKNOWN_DEFAULT;
+	check(unknown ? `skipped default ${unknown} warned about inside the dialog, above the overlay`
+	              : 'no warning band when every default matches a peer setting', await ev(`(() => {
 		const n = document.querySelector('.modal .cbi-map:not(.hidden) .load-defaults-warning');
-		if (!n) return false;
+		if (!n) return ${unknown ? 'false' : 'true'};
 		const r = n.getBoundingClientRect();
-		return n.contains(document.elementFromPoint(r.left + r.width / 2, r.top + 10)) && /peer_mtu/.test(n.textContent);
-	})()`), 'no visible in-dialog warning');
+		return ${unknown ? `n.contains(document.elementFromPoint(r.left + r.width / 2, r.top + 10)) && /${unknown}/.test(n.textContent)` : 'n.textContent'};
+	})()`) === true, unknown ? 'no visible in-dialog warning' : await ev(`document.querySelector('.modal .load-defaults-warning')?.textContent`));
 
 	check('peer 2: fresh key pair, different from peer 1', g.private_key?.[0] && g.private_key[0] !== priv1, [priv1, g.private_key]);
 

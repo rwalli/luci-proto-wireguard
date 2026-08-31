@@ -48,7 +48,7 @@ const peerByDescription = (desc) => ev(`(async () => {
 
 	/* ---- one press -------------------------------------------------------- */
 	const desc1 = 'Quick test ' + Date.now();
-	const before = await ev(`(await L.require('uci')).sections('network', 'wireguard_wg0').length`);
+	const before = await ev(`(async () => (await L.require('uci')).sections('network', 'wireguard_wg0').length)()`);
 
 	await ev(`(async () => {
 		const inp = document.querySelector('.modal input.quick-add-description');
@@ -59,7 +59,7 @@ const peerByDescription = (desc) => ev(`(async () => {
 	})()`);
 
 	const p1 = await peerByDescription(desc1);
-	check('a peer was created', p1 != null, { before, after: await ev(`(await L.require('uci')).sections('network', 'wireguard_wg0').length`) });
+	check('a peer was created', p1 != null, { before, after: await ev(`(async () => (await L.require('uci')).sections('network', 'wireguard_wg0').length)()`) });
 
 	const used = (process.env.USED || '').split(',').filter(Boolean);
 	const isFreeHost = (v) => /^10\.10\.11\.\d+\/32$/.test(v ?? '') && !used.includes(String(v).split('/')[0]) && v !== '10.10.11.1/32';
@@ -75,10 +75,12 @@ const peerByDescription = (desc) => ev(`(async () => {
 	check('the new peer shows up in the grid', await ev(`[...document.querySelectorAll('.modal tr.cbi-section-table-row')].some(r => r.textContent.includes(${JSON.stringify(desc1)}))`),
 		await ev(`[...document.querySelectorAll('.modal tr.cbi-section-table-row')].map(r => r.textContent.trim().replace(/\\s+/g, ' ').slice(0, 60))`));
 	check('the description field is cleared again', (await ev(`document.querySelector('.modal input.quick-add-description').value`)) === '', 'still filled');
-	/* with every default valid and peer_generate_keys on, nothing is left to warn about */
-	check('no warning band for a clean set of defaults',
-		(await ev(`!document.querySelector('.modal .quick-add-warning')`)) === true,
-		await ev(`document.querySelector('.modal .quick-add-warning')?.textContent`));
+	/* with every default valid and peer_generate_keys on, nothing is left to warn about;
+	   set UNKNOWN_DEFAULT (see test-full.js) to exercise the warning band instead */
+	const unknown = process.env.UNKNOWN_DEFAULT;
+	const warning = await ev(`document.querySelector('.modal .quick-add-warning')?.textContent ?? null`);
+	check(unknown ? `skipped default ${unknown} warned about after a quick add` : 'no warning band for a clean set of defaults',
+		unknown ? new RegExp(unknown).test(warning ?? '') : warning === null, warning);
 
 	/* ---- second press: Enter in the field, next free address -------------- */
 	const desc2 = 'Quick test B ' + Date.now();

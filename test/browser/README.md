@@ -26,11 +26,19 @@ is nothing to `npm install`.
     CHROME=… node test/browser/test-editor.js shot.png   # the Edit defaults dialog
     CHROME=… node test/browser/test-quickadd.js          # Quick add peer
 
-`test-full.js` and `test-quickadd.js` take the host addresses already in use in `USED` (comma separated) so it can tell a
+`test-full.js` and `test-quickadd.js` take the host addresses already in use in `USED` (comma separated) so they can tell a
 freshly calculated address from an occupied one:
 
     USED=$(ssh root@10.9.0.133 "uci show network | sed -n 's/.*allowed_ips=//p' \
         | tr -d \"'\" | tr ' ' '\n' | sed 's#/32$##' | tr '\n' ','")
+
+Both also honour `UNKNOWN_DEFAULT`: leave it unset (the normal case) and they assert that no
+warning band appears, or set it to a `peer_*` option that matches no peer field to assert that the
+band names it:
+
+    ssh root@10.9.0.133 'uci set network.wg0.peer_mtu=1380; uci commit network'
+    CHROME=… USED=… UNKNOWN_DEFAULT=peer_mtu node test/browser/test-full.js
+    ssh root@10.9.0.133 'uci delete network.wg0.peer_mtu; uci commit network'
 
 The test assumes the router at `10.9.0.133` with a blank root password, a `wg0`
 interface holding `10.10.11.1/24`, and the `peer_*` / `client_*` defaults set on
