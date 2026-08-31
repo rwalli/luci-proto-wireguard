@@ -1,7 +1,8 @@
-# Browser test for the peer dialog
+# Browser tests for the peer dialog
 
 Drives a real LuCI session in headless Chrome and checks the *Load defaults*
-button and the configuration export end to end. Not part of the package —
+button, the *Edit defaults* dialog, *Quick add peer* and the configuration
+export end to end. Not part of the package —
 `luci.mk` only installs `htdocs/` and `root/`.
 
 ## Setup (no root beyond the shared libraries, no X server)
@@ -23,8 +24,9 @@ is nothing to `npm install`.
     CHROME=./chrome-headless-shell/linux-*/chrome-headless-shell-linux64/chrome-headless-shell \
         node test/browser/test-full.js      # Load defaults + configuration export
     CHROME=… node test/browser/test-editor.js shot.png   # the Edit defaults dialog
+    CHROME=… node test/browser/test-quickadd.js          # Quick add peer
 
-`test-full.js` takes the host addresses already in use in `USED` (comma separated) so it can tell a
+`test-full.js` and `test-quickadd.js` take the host addresses already in use in `USED` (comma separated) so it can tell a
 freshly calculated address from an occupied one:
 
     USED=$(ssh root@10.9.0.133 "uci show network | sed -n 's/.*allowed_ips=//p' \
