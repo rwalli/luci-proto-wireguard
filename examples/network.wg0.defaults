@@ -1,0 +1,61 @@
+# Example defaults for luci-proto-wireguard.
+#
+# These options live on the WireGuard *interface* section in /etc/config/network.
+# netifd ignores options it does not know, so they are carried along untouched;
+# no extra config file and no ACL change is needed.
+#
+# Two prefixes, because the same name means different things in each place:
+#
+#   peer_*    prefill the peer dialog       -> config wireguard_wg0  (this router)
+#   client_*  prefill the export dialog     -> the peer's own .conf  ([Interface] / [Peer])
+#
+# Edit them in the UI under Network -> Interfaces -> wg0 -> Edit -> Peers -> "Edit defaults…",
+# or by hand as below.
+
+config interface 'wg0'
+	option proto 'wireguard'
+	option private_key 'AAAA…your interface private key…AAAA='
+	option listen_port '51820'
+	option mtu '1420'
+	list   addresses '10.10.11.1/24'
+	list   addresses 'fd22:2::1/64'
+
+	# ---- defaults for a new peer (device side) -------------------------------
+	# "Load defaults" in the peer dialog and "Quick add peer" on the peers tab
+	# apply these. A free host address from the interface subnet (10.10.11.2/32,
+	# fd22:2::2/128, …) is always prepended to allowed_ips, so list only the
+	# extra networks that peer routes to this router.
+	list   peer_allowed_ips '10.0.0.0/24'
+	option peer_route_allowed_ips '1'
+	option peer_endpoint_host 'peer.example.com'
+	option peer_endpoint_port '5559'
+	option peer_persistent_keepalive '25'
+
+	# Optional fallback description, used when the Quick add field is left empty.
+	#option peer_description 'Road warrior'
+
+	# Generate a key pair / preshared key as part of the same press.
+	option peer_generate_keys '1'
+	option peer_generate_psk '1'
+
+	# ---- defaults for the generated client configuration ---------------------
+	# These prefill "Generate configuration…"; the key name decides whether a
+	# value lands in [Interface] or in [Peer] of the peer's own .conf.
+
+	# [Interface] of the client
+	list   client_dns '10.10.11.1'
+	option client_mtu '1380'
+	#option client_listen_port '5559'
+
+	# [Peer] of the client
+	option client_endpoint_host 'vpn.example.com'
+	option client_endpoint_port '51820'
+	option client_persistent_keepalive '25'
+	# What the client routes into the tunnel. Include the router's tunnel IP
+	# (or the whole tunnel subnet) whenever client_dns points at it, otherwise
+	# the peer comes up but cannot resolve anything.
+	list   client_allowed_ips '10.0.0.0/24'
+	list   client_allowed_ips '10.10.11.1/32'
+	# …or, for a full tunnel:
+	#list  client_allowed_ips '0.0.0.0/0'
+	#list  client_allowed_ips '::/0'
