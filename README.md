@@ -25,16 +25,19 @@ differs from upstream; the other five files are byte-identical to
 The package ships a single JavaScript file that LuCI loads at runtime, so the
 fast path is to replace that one file. No restart, no rebuild.
 
+Run this **on the router**, at its own shell prompt:
+
 ```sh
-ROUTER=root@192.168.1.1
+RAW=https://raw.githubusercontent.com/rwalli/luci-proto-wireguard/main
+JS=/www/luci-static/resources/protocol/wireguard.js
 
 # keep the stock file so you can go back
-ssh $ROUTER 'cp /www/luci-static/resources/protocol/wireguard.js \
-                /root/wireguard.js.orig'
+cp "$JS" /root/wireguard.js.orig
 
-# install
-cat htdocs/luci-static/resources/protocol/wireguard.js \
-    | ssh $ROUTER 'cat > /www/luci-static/resources/protocol/wireguard.js'
+# fetch next to it, then move into place, so a failed download cannot
+# leave you with a truncated wireguard.js
+wget -O /tmp/wireguard.js "$RAW/htdocs/luci-static/resources/protocol/wireguard.js" \
+	&& mv /tmp/wireguard.js "$JS"
 ```
 
 Then **hard-reload** the LuCI page (Ctrl-Shift-R) — LuCI caches JS aggressively
@@ -43,32 +46,54 @@ and a normal reload will keep serving the old file.
 Set some defaults to have anything to load — see [examples](examples/):
 
 ```sh
+wget -O /tmp/set-defaults.sh "$RAW/examples/set-defaults.sh" && sh /tmp/set-defaults.sh wg0
+```
+
+If `wget` fails on certificate verification, the router is missing the CA
+bundle: `apk add ca-bundle` (or `opkg install ca-bundle`), then retry.
+
+<details>
+<summary>Installing from a checkout instead</summary>
+
+```sh
+ROUTER=root@192.168.1.1
+
+ssh $ROUTER 'cp /www/luci-static/resources/protocol/wireguard.js \
+                /root/wireguard.js.orig'
+
+cat htdocs/luci-static/resources/protocol/wireguard.js \
+    | ssh $ROUTER 'cat > /www/luci-static/resources/protocol/wireguard.js'
+
 ssh $ROUTER 'sh -s wg0' < examples/set-defaults.sh
 ```
 
+</details>
+
 ## Quick uninstall
+
+Also on the router:
 
 ```sh
 # back to the stock file
-ssh $ROUTER 'cp /root/wireguard.js.orig \
-                /www/luci-static/resources/protocol/wireguard.js'
+cp /root/wireguard.js.orig /www/luci-static/resources/protocol/wireguard.js
 ```
 
 or let the package manager restore it:
 
 ```sh
-ssh $ROUTER 'apk fix luci-proto-wireguard'                       # apk (24.10+)
-ssh $ROUTER 'opkg install --force-reinstall luci-proto-wireguard'  # opkg
+apk fix luci-proto-wireguard                        # apk (24.10+)
+opkg install --force-reinstall luci-proto-wireguard # opkg
 ```
 
 Hard-reload again afterwards. The `peer_*` / `client_*` options left behind in
 `/etc/config/network` are inert — netifd ignores them — but to clear them:
 
 ```sh
-ssh $ROUTER 'for o in $(uci show network.wg0 \
-        | sed -n "s/^network\.wg0\.\(peer_[a-z_]*\)=.*/\1/p; s/^network\.wg0\.\(client_[a-z_]*\)=.*/\1/p"); do
-            uci -q delete network.wg0.$o
-        done; uci commit network'
+for o in $(uci show network.wg0 \
+	| sed -n "s/^network\.wg0\.\(peer_[a-z_]*\)=.*/\1/p; s/^network\.wg0\.\(client_[a-z_]*\)=.*/\1/p"); do
+		uci -q delete network.wg0.$o
+done
+uci commit network
 ```
 
 Peers created while the feature was installed are ordinary peer sections and
