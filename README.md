@@ -119,11 +119,13 @@ A full annotated example is in
 
 ## Compatibility with the official LuCI snapshot
 
-Checked 2026-09-30 against `openwrt/luci` master:
+Last merged from `openwrt/luci` master on 2026-10-13, at upstream commit
+`1a36248e` ("luci-proto-wireguard: add tunlink option", 2026-10-09):
 
-* Upstream has not touched `protocols/luci-proto-wireguard` since this fork
-  (its newest commit there is 2026-06-26), so the fork point is byte-identical
-  to master and the only divergence is the feature work in `wireguard.js`.
+* Five of the six package files are byte-identical to upstream; the only
+  divergence is the feature work in `wireguard.js`, which carries every upstream
+  change merged in — including the **Underlying interface** (`tunlink`) field on
+  the General tab.
 * Every luci-base API this uses is present in master — `addModalOptions`
   (same `(modalSection, section_id, ev)` signature and call site),
   `renderMoreOptionsModal`, `getActiveModalMap`, `triggerValidation`,
@@ -136,6 +138,18 @@ Checked 2026-09-30 against `openwrt/luci` master:
   write the new section straight to uci.
 * Since the fork, luci-base master has no commits to `form.js`, `uci.js` or
   `validation.js`, and one to `ui.js` (a textarea scrolling fix, unrelated).
+
+To re-sync later, diff the fork point against upstream and three-way merge:
+
+```sh
+git show 360a415:htdocs/luci-static/resources/protocol/wireguard.js > /tmp/base.js
+curl -sfL https://raw.githubusercontent.com/openwrt/luci/master/protocols/\
+luci-proto-wireguard/htdocs/luci-static/resources/protocol/wireguard.js > /tmp/upstream.js
+git merge-file htdocs/luci-static/resources/protocol/wireguard.js /tmp/base.js /tmp/upstream.js
+```
+
+Our own hunks sit at the top of the file (the helpers) and from the peers
+section down, so upstream changes to the interface tabs merge cleanly.
 
 Tested on OpenWrt 25.12.0-rc4 with LuCI snapshot `26.029.67016`.
 
